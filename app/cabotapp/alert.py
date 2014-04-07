@@ -1,5 +1,3 @@
-from os import environ as env
-
 from django.conf import settings
 from django.core.mail import send_mail
 from django.core.urlresolvers import reverse
@@ -12,7 +10,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-email_template = """Service {{ service.name }} {{ scheme }}://{{ host }}{% url service pk=service.id %} {% if service.overall_status != service.PASSING_STATUS %}alerting with status: {{ service.overall_status }}{% else %}is back to normal{% endif %}.
+email_template = """Service {{ service.name }} {{ scheme }}://{{ host }}{% url service pk=service.id %} {% if service.overall_status != service.PASSING_STATUS %}alerting with status: {{ service.overall_status }}{% else %}is back to normal{% endif %} (failing since {{ first_fail.time }}).
 {% if service.overall_status != service.PASSING_STATUS %}
 CHECKS FAILING:{% for check in service.all_failing_checks %}
   FAILING - {{ check.name }} - Type: {{ check.check_category }} - Importance: {{ check.get_importance_display }}{% endfor %}
@@ -42,6 +40,20 @@ def send_alert(service, duty_officers=None):
         send_telephone_alert(service, users, duty_officers)
 
 
+def get_first_fail(service):
+    still_failing = service.overall_status != service.PASSING_STATUS
+    try:
+        last_passing = service.snapshots.filter(
+            overall_status=service.PASSING_STATUS
+        ).order_by('-id')[0 if still_failing else 1]
+    except IndexError:
+        failing_since = service.snapshots.order_by('id')[0]
+    else:
+        failing_since = service.snapshots.filter(id__gt=last_passing.id).order_by('id')[0]
+
+    return failing_since
+
+
 def send_email_alert(service, users, duty_officers):
     emails = [u.email for u in users if u.email]
     if not emails:
@@ -49,7 +61,8 @@ def send_email_alert(service, users, duty_officers):
     c = Context({
         'service': service,
         'host': settings.WWW_HTTP_HOST,
-        'scheme': settings.WWW_SCHEME
+        'scheme': settings.WWW_SCHEME,
+        'first_fail': get_first_fail(service),
     })
     if service.overall_status != service.PASSING_STATUS:
         if service.overall_status == service.CRITICAL_STATUS:
@@ -91,6 +104,7 @@ def send_hipchat_alert(service, users, duty_officers):
         'host': settings.WWW_HTTP_HOST,
         'scheme': settings.WWW_SCHEME,
         'alert': alert,
+        'first_fail': get_first_fail(service),
     })
     message = Template(hipchat_template).render(c)
     _send_hipchat_alert(message, color=color, sender='Cabot/%s' % service.name)
@@ -122,6 +136,7 @@ def send_sms_alert(service, users, duty_officers):
         'service': service,
         'host': settings.WWW_HTTP_HOST,
         'scheme': settings.WWW_SCHEME,
+        'first_fail': get_first_fail(service),
     })
     message = Template(sms_template).render(c)
     mobiles = list(set(mobiles))
