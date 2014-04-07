@@ -1,7 +1,8 @@
 from django.conf import settings
 from django.core.mail import send_mail
 from django.core.urlresolvers import reverse
-from django.template import Context, Template
+from django.template import Context
+from django.template.loader import get_template
 
 from twilio.rest import TwilioRestClient
 from twilio import twiml
@@ -9,23 +10,6 @@ import requests
 import logging
 
 logger = logging.getLogger(__name__)
-
-email_template = """Service {{ service.name }} {{ scheme }}://{{ host }}{% url service pk=service.id %} {% if service.overall_status != service.PASSING_STATUS %}alerting with status: {{ service.overall_status }}{% else %}is back to normal{% endif %} (failing since {{ first_fail.time }}).
-{% if service.overall_status != service.PASSING_STATUS %}
-CHECKS FAILING:{% for check in service.all_failing_checks %}
-  FAILING - {{ check.name }} - Type: {{ check.check_category }} - Importance: {{ check.get_importance_display }}{% endfor %}
-{% if service.all_passing_checks %}
-Passing checks:{% for check in service.all_passing_checks %}
-  PASSING - {{ check.name }} - Type: {{ check.check_category }} - Importance: {{ check.get_importance_display }}{% endfor %}
-{% endif %}
-{% endif %}
-"""
-
-hipchat_template = "Service {{ service.name }} {% if service.overall_status == service.PASSING_STATUS %}is back to normal{% else %}reporting {{ service.overall_status }} status{% endif %}: {{ scheme }}://{{ host }}{% url service pk=service.id %}. {% if service.overall_status != service.PASSING_STATUS %}Checks failing:{% for check in service.all_failing_checks %} {{ check.name }}{% if check.last_result.error %} ({{ check.last_result.error|safe }}){% endif %}{% endfor %}{% endif %}{% if alert %}{% for alias in users %} @{{ alias }}{% endfor %}{% endif %}"
-
-sms_template = "Service {{ service.name }} {% if service.overall_status == service.PASSING_STATUS %}is back to normal{% else %}reporting {{ service.overall_status }} status{% endif %}: {{ scheme }}://{{ host }}{% url service pk=service.id %}"
-
-telephone_template = "This is an urgent message from Arachnys monitoring. Service \"{{ service.name }}\" is erroring. Please check Cabot urgently."
 
 
 def send_alert(service, duty_officers=None):
@@ -71,10 +55,9 @@ def send_email_alert(service, users, duty_officers):
             service.overall_status, service.name)
     else:
         subject = 'Service back to normal: %s' % (service.name,)
-    t = Template(email_template)
     send_mail(
         subject=subject,
-        message=t.render(c),
+        message=get_template('cabotapp/alert_email.html').render(c),
         from_email='Cabot <%s>' % settings.CABOT_FROM_EMAIL,
         recipient_list=emails,
     )
@@ -106,7 +89,7 @@ def send_hipchat_alert(service, users, duty_officers):
         'alert': alert,
         'first_fail': get_first_fail(service),
     })
-    message = Template(hipchat_template).render(c)
+    message = get_template('cabotapp/alert_hipchat.txt').render(c)
     _send_hipchat_alert(message, color=color, sender='Cabot/%s' % service.name)
 
 
@@ -138,7 +121,7 @@ def send_sms_alert(service, users, duty_officers):
         'scheme': settings.WWW_SCHEME,
         'first_fail': get_first_fail(service),
     })
-    message = Template(sms_template).render(c)
+    message = get_template('cabotapp/alert_sms.txt').render(c)
     mobiles = list(set(mobiles))
     for mobile in mobiles:
         try:
@@ -175,7 +158,7 @@ def send_telephone_alert(service, users, duty_officers):
 
 def telephone_alert_twiml_callback(service):
     c = Context({'service': service})
-    t = Template(telephone_template).render(c)
+    t = get_template('cabotapp/alert_telephone.txt').render(c)
     r = twiml.Response()
     r.say(t, voice='woman')
     r.hangup()
